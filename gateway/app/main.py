@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 import httpx
 import redis
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -24,7 +24,7 @@ from .config import settings
 from .database import get_db
 from .document_generator import generate_document, generate_reference
 from .models import (
-    AuditLog, Citizen, Document, Employee, ErrorReport, OtpCode, ServiceRequest,
+    AuditLog, Citizen, DataShare, Document, Employee, ErrorReport, OtpCode, ServiceRequest,
 )
 from .pdf_generator import generate_pdf
 from .services_catalog import CATALOG
@@ -950,3 +950,238 @@ async def start_life_event(event_id: str, cin: str, db: Session = Depends(get_db
         "progress_percent": round(completed / total * 100) if total else 0,
         "steps": steps_results,
     }
+
+
+# ══════════════════════════════════════════════════
+#  WEBSOCKET REAL-TIME NOTIFICATIONS
+# ══════════════════════════════════════════════════
+
+_ws_clients: dict[str, list[WebSocket]] = {}
+
+
+@app.websocket("/ws/citizen/{cin}")
+async def websocket_endpoint(websocket: WebSocket, cin: str):
+    """Real-time notifications for a citizen."""
+    await websocket.accept()
+    _ws_clients.setdefault(cin, []).append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        _ws_clients.get(cin, []).remove(websocket)
+
+
+async def _notify(cin: str, event_type: str, message: str, data: dict | None = None):
+    """Push a notification to all connected WebSocket clients for a CIN."""
+    payload = {"type": event_type, "message": message, "data": data or {},
+               "timestamp": datetime.utcnow().isoformat()}
+    for ws in _ws_clients.get(cin, []):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            pass
+
+
+# ══════════════════════════════════════════════════
+#  CONSENT MANAGEMENT / DATA SHARING
+# ══════════════════════════════════════════════════
+
+
+class ShareCreatePayload(BaseModel):
+    cin: str
+    recipient_name: str
+    purpose: str = ""
+    ministries: list[str]
+    expires_hours: int = 24
+    one_time: bool = False
+
+
+@app.post("/shares")
+async def create_share(body: ShareCreatePayload, db: Session = Depends(get_db)):
+    """Citizen creates a data share link with scoped permissions."""
+    citizen = db.query(Citizen).filter(Citizen.cin == body.cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+
+    # Validate ministries
+    for m in body.ministries:
+        if m not in MINISTRIES:
+            raise HTTPException(status_code=400, detail=f"Unknown ministry: {m}")
+
+    import secrets
+    token = secrets.token_urlsafe(32)
+    code = str(random.randint(100000, 999999))
+
+    share = DataShare(
+        cin=body.cin, token=token, access_code=code,
+        recipient_name=body.recipient_name, purpose=body.purpose,
+        ministries=body.ministries,
+        expires_at=datetime.utcnow() + timedelta(hours=body.expires_hours),
+        one_time=body.one_time,
+    )
+    db.add(share)
+    db.commit()
+    db.refresh(share)
+
+    _log_access(db, body.cin, "citizen-portal",
+                f"Data share created for {body.recipient_name}: {body.ministries}", action="share")
+
+    return {
+        "token": token, "access_code": code,
+        "share_url": f"/public/shared/{token}",
+        "recipient": body.recipient_name,
+        "ministries": body.ministries,
+        "expires_at": share.expires_at.isoformat(),
+        "one_time": body.one_time,
+    }
+
+
+@app.get("/shares/{cin}")
+async def list_shares(cin: str, db: Session = Depends(get_db)):
+    """List all active data shares for a citizen."""
+    rows = (
+        db.query(DataShare)
+        .filter(DataShare.cin == cin)
+        .order_by(DataShare.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": str(s.id), "token": s.token, "recipient_name": s.recipient_name,
+            "purpose": s.purpose, "ministries": s.ministries,
+            "expires_at": s.expires_at.isoformat(), "one_time": s.one_time,
+            "revoked": s.revoked, "used": s.used, "access_count": s.access_count,
+            "active": not s.revoked and s.expires_at.replace(tzinfo=None) > datetime.utcnow() and not (s.one_time and s.used),
+            "created_at": s.created_at.isoformat(),
+        }
+        for s in rows
+    ]
+
+
+@app.delete("/shares/{cin}/{token}")
+async def revoke_share(cin: str, token: str, db: Session = Depends(get_db)):
+    """Citizen revokes a share link."""
+    share = db.query(DataShare).filter(DataShare.cin == cin, DataShare.token == token).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+    share.revoked = True
+    db.commit()
+    _log_access(db, cin, "citizen-portal", f"Share revoked: {share.recipient_name}", action="revoke")
+    return {"status": "revoked"}
+
+
+@app.post("/public/shared/{token}")
+async def access_shared_data(token: str, access_code: str, db: Session = Depends(get_db)):
+    """Third party accesses shared data using token + access code."""
+    share = db.query(DataShare).filter(DataShare.token == token).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="Share link not found")
+    if share.revoked:
+        raise HTTPException(status_code=403, detail="This share has been revoked")
+    if share.expires_at.replace(tzinfo=None) < datetime.utcnow():
+        raise HTTPException(status_code=403, detail="This share has expired")
+    if share.one_time and share.used:
+        raise HTTPException(status_code=403, detail="This one-time share has already been used")
+    if share.access_code != access_code:
+        raise HTTPException(status_code=401, detail="Invalid access code")
+
+    citizen = db.query(Citizen).filter(Citizen.cin == share.cin).first()
+    result = {
+        "citizen": {"full_name": citizen.full_name, "cin_masked": f"****{share.cin[-4:]}"},
+        "shared_by": citizen.full_name,
+        "purpose": share.purpose,
+        "ministries": {},
+    }
+
+    # Fetch ONLY the permitted ministries
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for ministry in share.ministries:
+            url = MINISTRIES.get(ministry)
+            if not url:
+                continue
+            try:
+                resp = await client.get(f"{url}/data/{share.cin}")
+                if resp.status_code == 200:
+                    result["ministries"][ministry] = resp.json()
+            except httpx.RequestError:
+                result["ministries"][ministry] = {"error": "Service unavailable"}
+
+    # Update usage
+    share.access_count += 1
+    if share.one_time:
+        share.used = True
+    db.commit()
+
+    _log_access(db, share.cin, f"shared:{share.recipient_name}",
+                f"Shared data accessed by {share.recipient_name}: {share.ministries}", action="shared-access")
+
+    # Notify citizen
+    await _notify(share.cin, "data_accessed",
+                  f"{share.recipient_name} accessed your shared data",
+                  {"recipient": share.recipient_name, "ministries": share.ministries})
+
+    return result
+
+
+# ══════════════════════════════════════════════════
+#  EMERGENCY ACCESS PROTOCOL
+# ══════════════════════════════════════════════════
+
+
+class EmergencyAccessPayload(BaseModel):
+    doctor_name: str
+    hospital_id: str
+    reason: str
+
+
+@app.post("/emergency/{cin}")
+async def emergency_access(cin: str, body: EmergencyAccessPayload, db: Session = Depends(get_db)):
+    """Emergency health data access. Returns critical medical info immediately.
+    Bypasses normal auth. Logged with EMERGENCY flag. Citizen notified."""
+
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+
+    # Fetch health data
+    health_data = await _fetch_ministry_data("health", cin)
+
+    result = {
+        "emergency": True,
+        "citizen": {"full_name": citizen.full_name, "cin": cin,
+                    "birth_date": citizen.birth_date.isoformat() if citizen.birth_date else None},
+        "critical_medical_info": {
+            "blood_type": health_data.get("blood_type") if health_data else "UNKNOWN",
+            "allergies": health_data.get("allergies", []) if health_data else [],
+            "chronic_diseases": health_data.get("chronic_diseases", []) if health_data else [],
+            "disabilities": health_data.get("disabilities", []) if health_data else [],
+            "organ_donor": health_data.get("organ_donor", False) if health_data else False,
+            "vaccinations": health_data.get("vaccinations", []) if health_data else [],
+        },
+        "accessed_by": {"doctor": body.doctor_name, "hospital": body.hospital_id},
+        "reason": body.reason,
+        "timestamp": datetime.utcnow().isoformat(),
+        "notice": "This access has been logged as EMERGENCY. The citizen will be notified.",
+    }
+
+    # Log with EMERGENCY flag
+    _log_access(db, cin, f"EMERGENCY:{body.hospital_id}:{body.doctor_name}",
+                f"EMERGENCY ACCESS - Reason: {body.reason} - Doctor: {body.doctor_name} - Hospital: {body.hospital_id}",
+                ministry="health", action="emergency")
+
+    # Notify citizen via WebSocket
+    await _notify(cin, "emergency_access",
+                  f"EMERGENCY: Dr. {body.doctor_name} at {body.hospital_id} accessed your health data",
+                  {"doctor": body.doctor_name, "hospital": body.hospital_id, "reason": body.reason})
+
+    print(f"\n{'!'*60}")
+    print(f"  EMERGENCY ACCESS")
+    print(f"  Citizen: {citizen.full_name} (CIN: {cin})")
+    print(f"  Doctor: {body.doctor_name}")
+    print(f"  Hospital: {body.hospital_id}")
+    print(f"  Reason: {body.reason}")
+    print(f"  Blood Type: {result['critical_medical_info']['blood_type']}")
+    print(f"  Allergies: {result['critical_medical_info']['allergies']}")
+    print(f"{'!'*60}\n")
+
+    return result

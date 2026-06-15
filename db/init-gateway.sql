@@ -60,6 +60,27 @@ CREATE TABLE IF NOT EXISTS service_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_req_cin ON service_requests (cin);
 
+-- ── Data sharing / consent ───────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS data_shares (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cin             VARCHAR(20) NOT NULL,
+    token           VARCHAR(100) UNIQUE NOT NULL,
+    access_code     VARCHAR(10) NOT NULL,
+    recipient_name  VARCHAR(255) NOT NULL,
+    purpose         VARCHAR(255),
+    ministries      JSONB NOT NULL,
+    expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+    one_time        BOOLEAN DEFAULT FALSE,
+    used            BOOLEAN DEFAULT FALSE,
+    revoked         BOOLEAN DEFAULT FALSE,
+    access_count    INTEGER DEFAULT 0,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shares_cin   ON data_shares (cin);
+CREATE INDEX IF NOT EXISTS idx_shares_token ON data_shares (token);
+
 CREATE TABLE IF NOT EXISTS documents (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cin              VARCHAR(20) NOT NULL,

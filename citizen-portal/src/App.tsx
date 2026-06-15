@@ -14,8 +14,9 @@ import LifeEventsPage from "./components/LifeEventsPage";
 import BundlesPage from "./components/BundlesPage";
 import VerifyPage from "./components/VerifyPage";
 import AssistantPanel from "./components/AssistantPanel";
+import DataSharingPage from "./components/DataSharingPage";
 
-type Page = "dashboard" | "life-events" | "bundles" | "services" | "requests" | "data" | "audit" | "report";
+type Page = "dashboard" | "life-events" | "bundles" | "services" | "requests" | "sharing" | "data" | "audit" | "report";
 
 export default function App() {
   const [citizen, setCitizen] = useState<CitizenData | null>(null);
@@ -167,6 +168,7 @@ export default function App() {
     { id: "bundles", label: "Bundles" },
     { id: "services", label: "Services" },
     { id: "requests", label: "My Requests" },
+    { id: "sharing", label: "Share Data" },
     { id: "data", label: "My Data" },
     { id: "audit", label: "Audit Trail", badge: audit.length },
     { id: "report", label: "Report Error" },
@@ -208,6 +210,7 @@ export default function App() {
         {page === "bundles" && <BundlesPage cin={citizen!.cin} onRequested={() => {}} />}
         {page === "services" && <ServicesPage cin={citizen!.cin} onRequestSubmitted={() => {}} />}
         {page === "requests" && <RequestsPage cin={citizen!.cin} />}
+        {page === "sharing" && <DataSharingPage cin={citizen!.cin} />}
         {page === "data" && <CitizenDataView data={citizen!} />}
         {page === "audit" && <AuditTrail entries={audit} onRefresh={handleAuditRefresh} />}
         {page === "report" && <ErrorReport cin={citizen!.cin} />}

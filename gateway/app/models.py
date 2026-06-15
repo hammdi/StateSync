@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Boolean, Date, DateTime, Text
+from sqlalchemy import Column, String, Boolean, Date, DateTime, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from .database import Base
@@ -61,6 +61,23 @@ class Document(Base):
     generated_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     valid_until = Column(Date, nullable=True)
     request_id = Column(UUID(as_uuid=True))
+
+
+class DataShare(Base):
+    __tablename__ = "data_shares"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cin = Column(String(20), nullable=False)
+    token = Column(String(100), unique=True, nullable=False)
+    access_code = Column(String(10), nullable=False)
+    recipient_name = Column(String(255), nullable=False)
+    purpose = Column(String(255))
+    ministries = Column(JSONB, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    one_time = Column(Boolean, default=False)
+    used = Column(Boolean, default=False)
+    revoked = Column(Boolean, default=False)
+    access_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 
 class ErrorReport(Base):
