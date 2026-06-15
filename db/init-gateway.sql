@@ -13,6 +13,17 @@ CREATE TABLE IF NOT EXISTS citizens (
     updated_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS audit_anchors (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    block_number    INTEGER UNIQUE NOT NULL,
+    merkle_root     VARCHAR(64) NOT NULL,
+    previous_hash   VARCHAR(64) NOT NULL,
+    block_hash      VARCHAR(64) UNIQUE NOT NULL,
+    entries_count   INTEGER NOT NULL,
+    entry_ids       JSONB NOT NULL,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cin_accessed    VARCHAR(20) NOT NULL,

@@ -20,6 +20,18 @@ class Citizen(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class AuditAnchor(Base):
+    __tablename__ = "audit_anchors"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    block_number = Column(Integer, unique=True, nullable=False)
+    merkle_root = Column(String(64), nullable=False)
+    previous_hash = Column(String(64), nullable=False)
+    block_hash = Column(String(64), unique=True, nullable=False)
+    entries_count = Column(Integer, nullable=False)
+    entry_ids = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class AuditLog(Base):
     """Immutable audit trail. Database rules prevent UPDATE and DELETE."""
     __tablename__ = "audit_log"

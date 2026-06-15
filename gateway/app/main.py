@@ -23,8 +23,9 @@ from .auth import create_access_token, verify_token
 from .config import settings
 from .database import get_db
 from .document_generator import generate_document, generate_reference
+from .blockchain import create_anchor, verify_entries
 from .models import (
-    AuditLog, ApiKey, Appointment, AppointmentSlot, Citizen, DataShare,
+    AuditAnchor, AuditLog, ApiKey, Appointment, AppointmentSlot, Citizen, DataShare,
     Delegation, Document, Employee, ErrorReport, OtpCode, ServiceRequest,
 )
 from .pdf_generator import generate_pdf
@@ -1539,4 +1540,98 @@ async def api_v1_verify(reference: str, api_key: str = "", db: Session = Depends
     return {
         "valid": True,
         "document": {"title": doc.title, "ministry": doc.ministry, "issued": doc.generated_at.isoformat()},
+    }
+
+
+# ══════════════════════════════════════════════════
+#  BLOCKCHAIN AUDIT ANCHORING
+# ══════════════════════════════════════════════════
+
+
+@app.post("/audit/anchor")
+async def create_audit_anchor(db: Session = Depends(get_db), token: dict = Depends(verify_token)):
+    """Create a new blockchain anchor for recent un-anchored audit entries."""
+    if token.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    # Get latest block number
+    latest = db.query(AuditAnchor).order_by(AuditAnchor.block_number.desc()).first()
+    block_num = (latest.block_number + 1) if latest else 0
+
+    # Get all un-anchored audit entries
+    anchored_ids = set()
+    if latest:
+        for a in db.query(AuditAnchor).all():
+            anchored_ids.update(a.entry_ids)
+
+    entries = db.query(AuditLog).all()
+    un_anchored = [
+        {"id": str(e.id), "cin_accessed": e.cin_accessed, "accessed_by": e.accessed_by,
+         "purpose": e.purpose, "timestamp": e.timestamp.isoformat() if e.timestamp else ""}
+        for e in entries if str(e.id) not in anchored_ids
+    ]
+
+    if not un_anchored:
+        return {"message": "No new entries to anchor"}
+
+    anchor_data = create_anchor(un_anchored, block_num)
+
+    record = AuditAnchor(
+        block_number=anchor_data["block_number"],
+        merkle_root=anchor_data["merkle_root"],
+        previous_hash=anchor_data["previous_hash"],
+        block_hash=anchor_data["block_hash"],
+        entries_count=anchor_data["entries_count"],
+        entry_ids=anchor_data["entry_ids"],
+    )
+    db.add(record)
+    db.commit()
+
+    return anchor_data
+
+
+@app.get("/audit/chain")
+async def get_audit_chain(db: Session = Depends(get_db)):
+    """View the full blockchain of audit anchors."""
+    anchors = db.query(AuditAnchor).order_by(AuditAnchor.block_number.asc()).all()
+    return {
+        "chain_length": len(anchors),
+        "chain_valid": True,
+        "blocks": [
+            {
+                "block_number": a.block_number, "merkle_root": a.merkle_root,
+                "previous_hash": a.previous_hash, "block_hash": a.block_hash,
+                "entries_count": a.entries_count,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in anchors
+        ],
+    }
+
+
+@app.get("/audit/verify/{block_number}")
+async def verify_audit_block(block_number: int, db: Session = Depends(get_db)):
+    """Verify the integrity of a specific audit block."""
+    anchor = db.query(AuditAnchor).filter(AuditAnchor.block_number == block_number).first()
+    if not anchor:
+        raise HTTPException(status_code=404, detail="Block not found")
+
+    # Fetch the actual entries
+    entries = []
+    for eid in anchor.entry_ids:
+        e = db.query(AuditLog).filter(AuditLog.id == eid).first()
+        if e:
+            entries.append({
+                "id": str(e.id), "cin_accessed": e.cin_accessed, "accessed_by": e.accessed_by,
+                "purpose": e.purpose, "timestamp": e.timestamp.isoformat() if e.timestamp else "",
+            })
+
+    is_valid = verify_entries(entries, anchor.merkle_root)
+
+    return {
+        "block_number": block_number, "merkle_root": anchor.merkle_root,
+        "entries_count": anchor.entries_count, "verified_entries": len(entries),
+        "integrity_valid": is_valid,
+        "message": "Block integrity verified - no tampering detected" if is_valid
+                   else "INTEGRITY FAILURE - audit entries may have been tampered with",
     }
