@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env.local
+node_modules/
+dist/
+.vite/
+*.log
+.DS_Store

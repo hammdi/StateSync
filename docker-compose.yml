@@ -1,0 +1,189 @@
+services:
+  # ── Databases (1 gateway + 9 ministries) ────────────────────
+
+  postgres-gateway:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: gateway_db }
+    volumes: [./db/init-gateway.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-gateway:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d gateway_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-civil:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: civil_db }
+    volumes: [./db/init-civil.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-civil:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d civil_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-edu:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: education_db }
+    volumes: [./db/init-education.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-edu:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d education_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-defense:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: defense_db }
+    volumes: [./db/init-defense.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-defense:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d defense_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-health:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: health_db }
+    volumes: [./db/init-health.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-health:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d health_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-justice:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: justice_db }
+    volumes: [./db/init-justice.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-justice:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d justice_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-finance:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: finance_db }
+    volumes: [./db/init-finance.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-finance:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d finance_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-social:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: social_db }
+    volumes: [./db/init-social.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-social:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d social_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-transport:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: transport_db }
+    volumes: [./db/init-transport.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-transport:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d transport_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  postgres-property:
+    image: postgres:15-alpine
+    environment: { POSTGRES_USER: statesync, POSTGRES_PASSWORD: statesync_secret, POSTGRES_DB: property_db }
+    volumes: [./db/init-property.sql:/docker-entrypoint-initdb.d/init.sql, pgdata-property:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U statesync -d property_db"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  # ── Cache ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 5 }
+    networks: [statesync]
+
+  # ── API Gateway ─────────────────────────────────────────────
+  gateway:
+    build: ./gateway
+    ports: ["8080:8000"]
+    environment:
+      DATABASE_URL: postgresql://statesync:statesync_secret@postgres-gateway:5432/gateway_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: change-this-secret-in-production
+      JWT_ALGORITHM: HS256
+      MINISTRY_CIVIL_URL: http://ministry-civil:8001
+      MINISTRY_EDUCATION_URL: http://ministry-education:8002
+      MINISTRY_DEFENSE_URL: http://ministry-defense:8003
+      MINISTRY_HEALTH_URL: http://ministry-health:8004
+      MINISTRY_JUSTICE_URL: http://ministry-justice:8005
+      MINISTRY_FINANCE_URL: http://ministry-finance:8006
+      MINISTRY_SOCIAL_URL: http://ministry-social:8007
+      MINISTRY_TRANSPORT_URL: http://ministry-transport:8009
+      MINISTRY_PROPERTY_URL: http://ministry-property:8011
+    depends_on:
+      postgres-gateway: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [statesync]
+
+  # ── 9 Ministry Microservices ────────────────────────────────
+  ministry-civil:
+    build: ./ministry-civil
+    ports: ["8001:8001"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-civil:5432/civil_db" }
+    depends_on: { postgres-civil: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-education:
+    build: ./ministry-education
+    ports: ["8002:8002"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-edu:5432/education_db" }
+    depends_on: { postgres-edu: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-defense:
+    build: ./ministry-defense
+    ports: ["8003:8003"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-defense:5432/defense_db" }
+    depends_on: { postgres-defense: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-health:
+    build: ./ministry-health
+    ports: ["8004:8004"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-health:5432/health_db" }
+    depends_on: { postgres-health: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-justice:
+    build: ./ministry-justice
+    ports: ["8005:8005"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-justice:5432/justice_db" }
+    depends_on: { postgres-justice: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-finance:
+    build: ./ministry-finance
+    ports: ["8006:8006"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-finance:5432/finance_db" }
+    depends_on: { postgres-finance: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-social:
+    build: ./ministry-social
+    ports: ["8007:8007"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-social:5432/social_db" }
+    depends_on: { postgres-social: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-transport:
+    build: ./ministry-transport
+    ports: ["8009:8009"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-transport:5432/transport_db" }
+    depends_on: { postgres-transport: { condition: service_healthy } }
+    networks: [statesync]
+
+  ministry-property:
+    build: ./ministry-property
+    ports: ["8011:8011"]
+    environment: { DATABASE_URL: "postgresql://statesync:statesync_secret@postgres-property:5432/property_db" }
+    depends_on: { postgres-property: { condition: service_healthy } }
+    networks: [statesync]
+
+  # ── Citizen Portal ──────────────────────────────────────────
+  citizen-portal:
+    build: ./citizen-portal
+    ports: ["3001:3000"]
+    environment: [VITE_API_URL=http://localhost:8080]
+    depends_on: [gateway]
+    networks: [statesync]
+
+volumes:
+  pgdata-gateway:
+  pgdata-civil:
+  pgdata-edu:
+  pgdata-defense:
+  pgdata-health:
+  pgdata-justice:
+  pgdata-finance:
+  pgdata-social:
+  pgdata-transport:
+  pgdata-property:
+
+networks:
+  statesync:
+    driver: bridge
