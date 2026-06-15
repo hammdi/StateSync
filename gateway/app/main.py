@@ -29,6 +29,7 @@ from .models import (
 from .pdf_generator import generate_pdf
 from .services_catalog import CATALOG
 from .bundles_catalog import BUNDLES, LIFE_EVENTS
+from .smart_assistant import compute_completeness, generate_reminders, generate_suggestions
 
 app = FastAPI(
     title="StateSync Gateway",
@@ -325,6 +326,76 @@ async def get_audit_trail(cin: str, db: Session = Depends(get_db)):
         }
         for l in logs
     ]
+
+
+@app.get("/citizen/{cin}/completeness")
+async def get_completeness(cin: str, db: Session = Depends(get_db)):
+    """Calculate data completeness score across all ministries."""
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+    citizen_dict = {
+        "cin": citizen.cin, "full_name": citizen.full_name,
+        "birth_date": citizen.birth_date.isoformat() if citizen.birth_date else None,
+        "birth_place": citizen.birth_place, "nationality": citizen.nationality, "phone": citizen.phone,
+    }
+    ministries_data = {}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for name, url in MINISTRIES.items():
+            try:
+                resp = await client.get(f"{url}/data/{cin}")
+                ministries_data[name] = resp.json() if resp.status_code == 200 else None
+            except httpx.RequestError:
+                ministries_data[name] = None
+    return compute_completeness(citizen_dict, ministries_data)
+
+
+@app.get("/citizen/{cin}/reminders")
+async def get_reminders(cin: str, db: Session = Depends(get_db)):
+    """Get proactive reminders and alerts based on citizen data."""
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+    citizen_dict = {
+        "cin": citizen.cin, "full_name": citizen.full_name,
+        "birth_date": citizen.birth_date.isoformat() if citizen.birth_date else None,
+        "birth_place": citizen.birth_place, "nationality": citizen.nationality, "phone": citizen.phone,
+    }
+    ministries_data = {}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for name, url in MINISTRIES.items():
+            try:
+                resp = await client.get(f"{url}/data/{cin}")
+                ministries_data[name] = resp.json() if resp.status_code == 200 else None
+            except httpx.RequestError:
+                ministries_data[name] = None
+    return {"reminders": generate_reminders(citizen_dict, ministries_data)}
+
+
+@app.get("/citizen/{cin}/assistant")
+async def get_assistant_suggestions(cin: str, db: Session = Depends(get_db)):
+    """Smart assistant: personalized suggestions based on citizen profile."""
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+    citizen_dict = {
+        "cin": citizen.cin, "full_name": citizen.full_name,
+        "birth_date": citizen.birth_date.isoformat() if citizen.birth_date else None,
+        "birth_place": citizen.birth_place, "nationality": citizen.nationality, "phone": citizen.phone,
+    }
+    ministries_data = {}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for name, url in MINISTRIES.items():
+            try:
+                resp = await client.get(f"{url}/data/{cin}")
+                ministries_data[name] = resp.json() if resp.status_code == 200 else None
+            except httpx.RequestError:
+                ministries_data[name] = None
+    suggestions = generate_suggestions(citizen_dict, ministries_data)
+    reminders = generate_reminders(citizen_dict, ministries_data)
+    completeness = compute_completeness(citizen_dict, ministries_data)
+    return {"citizen": citizen_dict["full_name"], "completeness": completeness["score"],
+            "reminders": reminders, "suggestions": suggestions}
 
 
 @app.get("/citizen/{cin}/{ministry}")

@@ -80,3 +80,11 @@ export const startLifeEvent = (eventId: string, cin: string) => post<any>(`/life
 // ── Public Verification ──────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const verifyDocument = (reference: string) => get<any>(`/public/verify/${encodeURIComponent(reference)}`);
+
+// ── Smart Assistant ──────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const fetchAssistant = (cin: string) => get<any>(`/citizen/${encodeURIComponent(cin)}/assistant`);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const fetchCompleteness = (cin: string) => get<any>(`/citizen/${encodeURIComponent(cin)}/completeness`);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const fetchReminders = (cin: string) => get<any>(`/citizen/${encodeURIComponent(cin)}/reminders`);

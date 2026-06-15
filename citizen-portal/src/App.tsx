@@ -13,6 +13,7 @@ import EmployeePortal from "./components/EmployeePortal";
 import LifeEventsPage from "./components/LifeEventsPage";
 import BundlesPage from "./components/BundlesPage";
 import VerifyPage from "./components/VerifyPage";
+import AssistantPanel from "./components/AssistantPanel";
 
 type Page = "dashboard" | "life-events" | "bundles" | "services" | "requests" | "data" | "audit" | "report";
 
@@ -24,6 +25,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [employeeMode, setEmployeeMode] = useState(false);
   const [verifyMode, setVerifyMode] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
 
   const handleSearch = useCallback(async (cin: string) => {
     setLoading(true);
@@ -189,9 +191,13 @@ export default function App() {
             </button>
           ))}
           <div className="flex-1" />
+          <button onClick={() => setAssistantOpen(true)}
+            className="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-500 text-white text-xs font-bold rounded-full hover:shadow-md transition-all whitespace-nowrap">
+            Smart Assistant
+          </button>
           <button onClick={() => setEmployeeMode(true)}
             className="px-3 py-2 text-xs text-gray-400 hover:text-gray-600 whitespace-nowrap">
-            Staff Portal &rarr;
+            Staff &rarr;
           </button>
         </div>
       </nav>
@@ -206,6 +212,13 @@ export default function App() {
         {page === "audit" && <AuditTrail entries={audit} onRefresh={handleAuditRefresh} />}
         {page === "report" && <ErrorReport cin={citizen!.cin} />}
       </main>
+
+      <AssistantPanel
+        cin={citizen!.cin}
+        open={assistantOpen}
+        onClose={() => setAssistantOpen(false)}
+        onNavigate={(p) => setPage(p as Page)}
+      />
     </div>
   );
 }

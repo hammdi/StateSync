@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { CitizenData, ServiceError } from "../types";
+import CompletenessCard from "./CompletenessCard";
 
 interface Props {
   data: CitizenData;
@@ -241,6 +242,9 @@ export default function Dashboard({ data, auditCount }: Props) {
           </div>
         )}
       </div>
+
+      {/* Completeness Score */}
+      <CompletenessCard cin={data.cin} />
     </div>
   );
 }
