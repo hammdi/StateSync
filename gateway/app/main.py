@@ -24,7 +24,8 @@ from .config import settings
 from .database import get_db
 from .document_generator import generate_document, generate_reference
 from .models import (
-    AuditLog, Citizen, DataShare, Document, Employee, ErrorReport, OtpCode, ServiceRequest,
+    AuditLog, ApiKey, Appointment, AppointmentSlot, Citizen, DataShare,
+    Delegation, Document, Employee, ErrorReport, OtpCode, ServiceRequest,
 )
 from .pdf_generator import generate_pdf
 from .services_catalog import CATALOG
@@ -1185,3 +1186,357 @@ async def emergency_access(cin: str, body: EmergencyAccessPayload, db: Session =
     print(f"{'!'*60}\n")
 
     return result
+
+
+# ══════════════════════════════════════════════════
+#  DELEGATION SYSTEM
+# ══════════════════════════════════════════════════
+
+
+class DelegationPayload(BaseModel):
+    citizen_cin: str
+    delegate_cin: str
+    delegate_name: str
+    relationship: str  # parent, lawyer, spouse, employer
+    scope: list[str]  # ministry names or ["all"]
+    expires_days: int = 30
+
+
+@app.post("/delegations")
+async def create_delegation(body: DelegationPayload, db: Session = Depends(get_db)):
+    """Citizen authorizes someone to act on their behalf."""
+    citizen = db.query(Citizen).filter(Citizen.cin == body.citizen_cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+
+    d = Delegation(
+        citizen_cin=body.citizen_cin, delegate_cin=body.delegate_cin,
+        delegate_name=body.delegate_name, relationship=body.relationship,
+        scope=body.scope,
+        expires_at=datetime.utcnow() + timedelta(days=body.expires_days),
+    )
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+
+    _log_access(db, body.citizen_cin, "citizen-portal",
+                f"Delegation created: {body.delegate_name} ({body.relationship}) scope={body.scope}", action="delegate")
+    return {
+        "id": str(d.id), "citizen_cin": d.citizen_cin, "delegate_cin": d.delegate_cin,
+        "delegate_name": d.delegate_name, "relationship": d.relationship,
+        "scope": d.scope, "expires_at": d.expires_at.isoformat(), "active": True,
+    }
+
+
+@app.get("/delegations/{cin}")
+async def list_delegations(cin: str, db: Session = Depends(get_db)):
+    """List delegations where citizen is either the delegator or delegate."""
+    given = db.query(Delegation).filter(Delegation.citizen_cin == cin).all()
+    received = db.query(Delegation).filter(Delegation.delegate_cin == cin).all()
+
+    def serialize(d: Delegation):
+        return {
+            "id": str(d.id), "citizen_cin": d.citizen_cin, "delegate_cin": d.delegate_cin,
+            "delegate_name": d.delegate_name, "relationship": d.relationship,
+            "scope": d.scope, "expires_at": d.expires_at.isoformat(),
+            "active": d.active and d.expires_at.replace(tzinfo=None) > datetime.utcnow(),
+        }
+
+    return {
+        "given": [serialize(d) for d in given],
+        "received": [serialize(d) for d in received],
+    }
+
+
+@app.delete("/delegations/{cin}/{delegation_id}")
+async def revoke_delegation(cin: str, delegation_id: str, db: Session = Depends(get_db)):
+    d = db.query(Delegation).filter(Delegation.id == delegation_id, Delegation.citizen_cin == cin).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Delegation not found")
+    d.active = False
+    db.commit()
+    return {"status": "revoked"}
+
+
+@app.get("/delegations/{cin}/act-as/{target_cin}")
+async def delegate_view_citizen(cin: str, target_cin: str, db: Session = Depends(get_db)):
+    """Delegate views citizen data within their authorized scope."""
+    deleg = (
+        db.query(Delegation)
+        .filter(Delegation.delegate_cin == cin, Delegation.citizen_cin == target_cin,
+                Delegation.active.is_(True))
+        .first()
+    )
+    if not deleg or deleg.expires_at.replace(tzinfo=None) < datetime.utcnow():
+        raise HTTPException(status_code=403, detail="No active delegation found")
+
+    result = {"cin": target_cin, "delegate": cin, "relationship": deleg.relationship, "ministries": {}}
+    allowed = deleg.scope if "all" not in deleg.scope else list(MINISTRIES.keys())
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for ministry in allowed:
+            url = MINISTRIES.get(ministry)
+            if not url:
+                continue
+            try:
+                resp = await client.get(f"{url}/data/{target_cin}")
+                if resp.status_code == 200:
+                    result["ministries"][ministry] = resp.json()
+            except httpx.RequestError:
+                pass
+
+    _log_access(db, target_cin, f"delegate:{cin}",
+                f"Delegate access by {deleg.delegate_name} ({deleg.relationship})", action="delegate-access")
+    return result
+
+
+# ══════════════════════════════════════════════════
+#  APPOINTMENT BOOKING
+# ══════════════════════════════════════════════════
+
+
+@app.get("/appointments/slots")
+async def list_available_slots(ministry: str = "", db: Session = Depends(get_db)):
+    """List available appointment slots."""
+    from sqlalchemy import func as sqlfunc
+    q = db.query(AppointmentSlot).filter(
+        AppointmentSlot.date >= datetime.utcnow().date(),
+        AppointmentSlot.booked < AppointmentSlot.capacity,
+    )
+    if ministry:
+        q = q.filter(AppointmentSlot.ministry == ministry)
+    slots = q.order_by(AppointmentSlot.date, AppointmentSlot.time_start).all()
+    return [
+        {
+            "id": str(s.id), "ministry": s.ministry, "location": s.location,
+            "date": s.date.isoformat(), "time_start": s.time_start.isoformat(),
+            "time_end": s.time_end.isoformat(),
+            "available": s.capacity - s.booked,
+        }
+        for s in slots
+    ]
+
+
+class BookAppointmentPayload(BaseModel):
+    cin: str
+    slot_id: str
+    purpose: str
+
+
+@app.post("/appointments")
+async def book_appointment(body: BookAppointmentPayload, db: Session = Depends(get_db)):
+    """Book an appointment slot."""
+    slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == body.slot_id).first()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if slot.booked >= slot.capacity:
+        raise HTTPException(status_code=400, detail="Slot is fully booked")
+
+    import secrets
+    ref = f"APT-{slot.ministry.upper()}-{secrets.token_hex(4).upper()}"
+
+    appt = Appointment(
+        cin=body.cin, slot_id=slot.id, ministry=slot.ministry,
+        purpose=body.purpose, reference=ref,
+    )
+    slot.booked += 1
+    db.add(appt)
+    db.commit()
+    db.refresh(appt)
+
+    _log_access(db, body.cin, "citizen-portal",
+                f"Appointment booked: {slot.ministry} on {slot.date} at {slot.time_start}", action="appointment")
+    await _notify(body.cin, "appointment_booked",
+                  f"Appointment confirmed at {slot.location} on {slot.date} {slot.time_start}",
+                  {"reference": ref})
+
+    return {
+        "id": str(appt.id), "reference": ref, "ministry": slot.ministry,
+        "location": slot.location, "date": slot.date.isoformat(),
+        "time_start": slot.time_start.isoformat(), "time_end": slot.time_end.isoformat(),
+        "purpose": body.purpose, "status": "confirmed",
+    }
+
+
+@app.get("/appointments/{cin}")
+async def list_appointments(cin: str, db: Session = Depends(get_db)):
+    """List all appointments for a citizen."""
+    rows = (
+        db.query(Appointment, AppointmentSlot)
+        .join(AppointmentSlot, Appointment.slot_id == AppointmentSlot.id)
+        .filter(Appointment.cin == cin)
+        .order_by(AppointmentSlot.date.desc())
+        .all()
+    )
+    return [
+        {
+            "id": str(a.id), "reference": a.reference, "ministry": a.ministry,
+            "location": s.location, "date": s.date.isoformat(),
+            "time_start": s.time_start.isoformat(), "time_end": s.time_end.isoformat(),
+            "purpose": a.purpose, "status": a.status,
+        }
+        for a, s in rows
+    ]
+
+
+@app.delete("/appointments/{cin}/{appointment_id}")
+async def cancel_appointment(cin: str, appointment_id: str, db: Session = Depends(get_db)):
+    appt = db.query(Appointment).filter(Appointment.id == appointment_id, Appointment.cin == cin).first()
+    if not appt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    slot = db.query(AppointmentSlot).filter(AppointmentSlot.id == appt.slot_id).first()
+    if slot:
+        slot.booked = max(0, slot.booked - 1)
+    appt.status = "cancelled"
+    db.commit()
+    return {"status": "cancelled"}
+
+
+# ══════════════════════════════════════════════════
+#  ANALYTICS DASHBOARD
+# ══════════════════════════════════════════════════
+
+
+@app.get("/analytics/overview")
+async def analytics_overview(db: Session = Depends(get_db)):
+    """System-wide analytics."""
+    from sqlalchemy import func as sqlfunc
+
+    citizens = db.query(Citizen).count()
+    total_requests = db.query(ServiceRequest).count()
+    total_documents = db.query(Document).count()
+    total_audits = db.query(AuditLog).count()
+    pending_requests = db.query(ServiceRequest).filter(ServiceRequest.status == "pending").count()
+    pending_errors = db.query(ErrorReport).filter(ErrorReport.status == "pending").count()
+    total_shares = db.query(DataShare).count()
+    total_appointments = db.query(Appointment).filter(Appointment.status == "confirmed").count()
+
+    # Per-ministry request counts
+    ministry_stats = (
+        db.query(ServiceRequest.ministry, ServiceRequest.status, sqlfunc.count())
+        .group_by(ServiceRequest.ministry, ServiceRequest.status)
+        .all()
+    )
+    by_ministry: dict = {}
+    for ministry, status, count in ministry_stats:
+        by_ministry.setdefault(ministry, {})[status] = count
+
+    # Recent activity (last 24h)
+    from datetime import timedelta as td
+    cutoff = datetime.utcnow() - td(hours=24)
+    recent_audits = db.query(AuditLog).filter(AuditLog.timestamp > cutoff).count()
+    recent_requests = db.query(ServiceRequest).filter(ServiceRequest.submitted_at > cutoff).count()
+
+    return {
+        "totals": {
+            "citizens": citizens, "requests": total_requests, "documents": total_documents,
+            "audit_entries": total_audits, "shares": total_shares, "appointments": total_appointments,
+        },
+        "pending": {"requests": pending_requests, "error_reports": pending_errors},
+        "last_24h": {"audit_entries": recent_audits, "requests": recent_requests},
+        "by_ministry": by_ministry,
+    }
+
+
+@app.get("/analytics/ministry/{name}")
+async def analytics_ministry(name: str, db: Session = Depends(get_db)):
+    """Per-ministry analytics."""
+    from sqlalchemy import func as sqlfunc
+
+    if name not in MINISTRIES:
+        raise HTTPException(status_code=404, detail="Ministry not found")
+
+    total = db.query(ServiceRequest).filter(ServiceRequest.ministry == name).count()
+    approved = db.query(ServiceRequest).filter(ServiceRequest.ministry == name, ServiceRequest.status == "approved").count()
+    rejected = db.query(ServiceRequest).filter(ServiceRequest.ministry == name, ServiceRequest.status == "rejected").count()
+    pending = db.query(ServiceRequest).filter(ServiceRequest.ministry == name, ServiceRequest.status == "pending").count()
+    documents = db.query(Document).filter(Document.ministry == name).count()
+    errors = db.query(ErrorReport).filter(ErrorReport.ministry == name).count()
+
+    # Top services
+    top_services = (
+        db.query(ServiceRequest.service_name, sqlfunc.count().label("cnt"))
+        .filter(ServiceRequest.ministry == name)
+        .group_by(ServiceRequest.service_name)
+        .order_by(sqlfunc.count().desc())
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "ministry": name, "label": MINISTRY_LABELS.get(name),
+        "requests": {"total": total, "approved": approved, "rejected": rejected, "pending": pending},
+        "documents_generated": documents, "error_reports": errors,
+        "approval_rate": round(approved / total * 100) if total else 0,
+        "top_services": [{"name": s, "count": c} for s, c in top_services],
+    }
+
+
+# ══════════════════════════════════════════════════
+#  THIRD-PARTY API
+# ══════════════════════════════════════════════════
+
+
+@app.get("/api/v1/citizen/{cin}")
+async def api_v1_citizen(cin: str, api_key: str = "", db: Session = Depends(get_db)):
+    """Third-party API: access citizen data with API key (scoped)."""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required. Pass ?api_key=sk_...")
+
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    ak = db.query(ApiKey).filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True)).first()
+    if not ak:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if ak.requests_today >= ak.rate_limit:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    ak.requests_today += 1
+    db.commit()
+
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+
+    result = {
+        "cin": citizen.cin, "full_name": citizen.full_name,
+        "ministries": {},
+    }
+
+    # Only return data for scoped ministries
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for ministry in ak.scopes:
+            url = MINISTRIES.get(ministry)
+            if not url:
+                continue
+            try:
+                resp = await client.get(f"{url}/data/{cin}")
+                if resp.status_code == 200:
+                    result["ministries"][ministry] = resp.json()
+            except httpx.RequestError:
+                pass
+
+    _log_access(db, cin, f"api:{ak.organization}",
+                f"API access by {ak.organization} (scopes: {ak.scopes})", action="api-access")
+    return result
+
+
+@app.get("/api/v1/verify/{reference}")
+async def api_v1_verify(reference: str, api_key: str = "", db: Session = Depends(get_db)):
+    """Third-party API: verify a document."""
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    ak = db.query(ApiKey).filter(ApiKey.key_hash == key_hash, ApiKey.active.is_(True)).first()
+    if not ak:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    doc = db.query(Document).filter(Document.reference_number == reference).first()
+    if not doc:
+        return {"valid": False}
+
+    return {
+        "valid": True,
+        "document": {"title": doc.title, "ministry": doc.ministry, "issued": doc.generated_at.isoformat()},
+    }

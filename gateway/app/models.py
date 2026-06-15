@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, Boolean, Date, DateTime, Integer, Text
+from sqlalchemy import Column, String, Boolean, Date, DateTime, Integer, Text, Time, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from .database import Base
@@ -114,5 +114,55 @@ class Employee(Base):
     full_name = Column(String(255), nullable=False)
     ministry = Column(String(50), nullable=False)
     role = Column(String(50), default="agent")
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class Delegation(Base):
+    __tablename__ = "delegations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    citizen_cin = Column(String(20), nullable=False)
+    delegate_cin = Column(String(20), nullable=False)
+    delegate_name = Column(String(255), nullable=False)
+    relationship = Column(String(100), nullable=False)
+    scope = Column(JSONB, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class AppointmentSlot(Base):
+    __tablename__ = "appointment_slots"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ministry = Column(String(50), nullable=False)
+    location = Column(String(255), nullable=False)
+    date = Column(Date, nullable=False)
+    time_start = Column(Time, nullable=False)
+    time_end = Column(Time, nullable=False)
+    capacity = Column(Integer, default=1)
+    booked = Column(Integer, default=0)
+
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cin = Column(String(20), nullable=False)
+    slot_id = Column(UUID(as_uuid=True), ForeignKey("appointment_slots.id"), nullable=False)
+    ministry = Column(String(50), nullable=False)
+    purpose = Column(String(255), nullable=False)
+    status = Column(String(30), default="confirmed")
+    reference = Column(String(50), unique=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization = Column(String(255), nullable=False)
+    key_hash = Column(String(255), nullable=False)
+    key_prefix = Column(String(10), nullable=False)
+    scopes = Column(JSONB, nullable=False)
+    rate_limit = Column(Integer, default=100)
+    requests_today = Column(Integer, default=0)
     active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)

@@ -81,6 +81,92 @@ CREATE TABLE IF NOT EXISTS data_shares (
 CREATE INDEX IF NOT EXISTS idx_shares_cin   ON data_shares (cin);
 CREATE INDEX IF NOT EXISTS idx_shares_token ON data_shares (token);
 
+-- ── Delegations ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS delegations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    citizen_cin     VARCHAR(20) NOT NULL,
+    delegate_cin    VARCHAR(20) NOT NULL,
+    delegate_name   VARCHAR(255) NOT NULL,
+    relationship    VARCHAR(100) NOT NULL,
+    scope           JSONB NOT NULL,
+    expires_at      TIMESTAMP WITH TIME ZONE NOT NULL,
+    active          BOOLEAN DEFAULT TRUE,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_deleg_citizen  ON delegations (citizen_cin);
+CREATE INDEX IF NOT EXISTS idx_deleg_delegate ON delegations (delegate_cin);
+
+-- ── Appointments ─────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS appointment_slots (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ministry        VARCHAR(50) NOT NULL,
+    location        VARCHAR(255) NOT NULL,
+    date            DATE NOT NULL,
+    time_start      TIME NOT NULL,
+    time_end        TIME NOT NULL,
+    capacity        INTEGER DEFAULT 1,
+    booked          INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS appointments (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cin             VARCHAR(20) NOT NULL,
+    slot_id         UUID NOT NULL REFERENCES appointment_slots(id),
+    ministry        VARCHAR(50) NOT NULL,
+    purpose         VARCHAR(255) NOT NULL,
+    status          VARCHAR(30) DEFAULT 'confirmed',
+    reference       VARCHAR(50) UNIQUE NOT NULL,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_appt_cin ON appointments (cin);
+
+-- ── Third-party API keys ─────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization    VARCHAR(255) NOT NULL,
+    key_hash        VARCHAR(255) NOT NULL,
+    key_prefix      VARCHAR(10) NOT NULL,
+    scopes          JSONB NOT NULL,
+    rate_limit      INTEGER DEFAULT 100,
+    requests_today  INTEGER DEFAULT 0,
+    active          BOOLEAN DEFAULT TRUE,
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Seed appointment slots (next 5 days, 3 ministries)
+DO $$
+DECLARE d DATE;
+BEGIN
+  FOR d IN SELECT generate_series(CURRENT_DATE + 1, CURRENT_DATE + 5, '1 day'::interval)::date LOOP
+    INSERT INTO appointment_slots (ministry, location, date, time_start, time_end, capacity) VALUES
+      ('civil',    'Civil Status Office - Capital City',  d, '09:00', '09:30', 3),
+      ('civil',    'Civil Status Office - Capital City',  d, '09:30', '10:00', 3),
+      ('civil',    'Civil Status Office - Capital City',  d, '10:00', '10:30', 3),
+      ('civil',    'Civil Status Office - Capital City',  d, '10:30', '11:00', 3),
+      ('civil',    'Civil Status Office - Capital City',  d, '14:00', '14:30', 3),
+      ('civil',    'Civil Status Office - Capital City',  d, '14:30', '15:00', 3),
+      ('transport','Transport Office - Harbor Town',      d, '08:30', '09:00', 2),
+      ('transport','Transport Office - Harbor Town',      d, '09:00', '09:30', 2),
+      ('transport','Transport Office - Harbor Town',      d, '09:30', '10:00', 2),
+      ('transport','Transport Office - Harbor Town',      d, '10:00', '10:30', 2),
+      ('justice',  'Court House - Lake District',         d, '10:00', '10:30', 1),
+      ('justice',  'Court House - Lake District',         d, '10:30', '11:00', 1),
+      ('justice',  'Court House - Lake District',         d, '11:00', '11:30', 1),
+      ('justice',  'Court House - Lake District',         d, '14:00', '14:30', 1);
+  END LOOP;
+END $$;
+
+-- Seed API keys (key = sk_test_statesync_bank, hash = SHA-256)
+INSERT INTO api_keys (organization, key_hash, key_prefix, scopes, rate_limit) VALUES
+  ('National Bank', 'a9d3699d2afaab20527516291e28de7c3da702f1268185545a8ea2c0633b268d', 'sk_test_', '["civil","finance","property"]', 1000),
+  ('City Hospital', '548166e45ee7cc0f724590194b2f0232052264cc6f69a3b446b475d7f11186f3', 'sk_hosp_', '["civil","health"]', 500)
+ON CONFLICT DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS documents (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cin              VARCHAR(20) NOT NULL,
