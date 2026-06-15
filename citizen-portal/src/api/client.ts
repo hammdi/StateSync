@@ -64,3 +64,19 @@ export const fetchEmployeeDashboard = (token: string) => get<EmployeeDashboardDa
 export const fetchEmployeeRequests = (token: string, status = "pending") => get<ServiceRequest[]>(`/employee/requests?status=${status}`, token);
 export const processRequest = (id: string, action: string, note: string, token: string) =>
   put<ServiceRequest>(`/employee/requests/${id}`, { action, note }, token);
+
+// ── Bundles ──────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const fetchBundles = () => get<any>("/bundles");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const requestBundle = (bundleId: string, cin: string) => post<any>(`/bundles/${bundleId}?cin=${cin}`, {});
+
+// ── Life Events ──────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const fetchLifeEvents = () => get<any>("/life-events");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const startLifeEvent = (eventId: string, cin: string) => post<any>(`/life-events/${eventId}?cin=${cin}`, {});
+
+// ── Public Verification ──────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const verifyDocument = (reference: string) => get<any>(`/public/verify/${encodeURIComponent(reference)}`);

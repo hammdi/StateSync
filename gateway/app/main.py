@@ -28,6 +28,7 @@ from .models import (
 )
 from .pdf_generator import generate_pdf
 from .services_catalog import CATALOG
+from .bundles_catalog import BUNDLES, LIFE_EVENTS
 
 app = FastAPI(
     title="StateSync Gateway",
@@ -675,3 +676,206 @@ async def resolve_error_report(report_id: str, action: RequestAction, db: Sessio
     er.review_note = action.note
     db.commit()
     return {"id": str(er.id), "status": er.status}
+
+
+# ══════════════════════════════════════════════════
+#  PUBLIC DOCUMENT VERIFICATION
+# ══════════════════════════════════════════════════
+
+@app.get("/public/verify/{reference}")
+async def verify_document(reference: str, db: Session = Depends(get_db)):
+    """Public endpoint — anyone can verify a document's authenticity. No login required."""
+    doc = db.query(Document).filter(Document.reference_number == reference).first()
+    if not doc:
+        return {"valid": False, "message": "Document not found in the system"}
+
+    citizen = db.query(Citizen).filter(Citizen.cin == doc.cin).first()
+    is_expired = bool(doc.valid_until and doc.valid_until < datetime.utcnow().date())
+
+    return {
+        "valid": not is_expired,
+        "expired": is_expired,
+        "document": {
+            "title": doc.title,
+            "ministry": doc.ministry,
+            "ministry_label": MINISTRY_LABELS.get(doc.ministry, doc.ministry),
+            "reference": doc.reference_number,
+            "citizen_name": citizen.full_name if citizen else "Unknown",
+            "cin_masked": f"****{doc.cin[-4:]}" if doc.cin else "",
+            "issued": doc.generated_at.isoformat() if doc.generated_at else None,
+            "valid_until": doc.valid_until.isoformat() if doc.valid_until else "Permanent",
+        },
+    }
+
+
+# ══════════════════════════════════════════════════
+#  DOCUMENT BUNDLES
+# ══════════════════════════════════════════════════
+
+@app.get("/bundles")
+async def list_bundles():
+    """List all available document bundles."""
+    return {"bundles": {k: {**v, "document_count": len(v["services"])} for k, v in BUNDLES.items()}}
+
+
+@app.post("/bundles/{bundle_id}")
+async def request_bundle(bundle_id: str, cin: str, db: Session = Depends(get_db)):
+    """Request all documents in a bundle at once."""
+    bundle = BUNDLES.get(bundle_id)
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+
+    results = []
+    for svc_def in bundle["services"]:
+        # Find service in catalog
+        service = None
+        for s in CATALOG.get(svc_def["ministry"], []):
+            if s["id"] == svc_def["service_id"]:
+                service = s
+                break
+        if not service:
+            continue
+
+        details = svc_def.get("default_details", {})
+        sr = ServiceRequest(
+            cin=cin, ministry=svc_def["ministry"], service_type=svc_def["service_id"],
+            service_name=service["name"], details=details, status="pending",
+        )
+
+        # Auto-approve if applicable
+        if service.get("auto_approve"):
+            sr.status = "approved"
+            sr.processed_at = datetime.utcnow()
+            sr.processed_by = "system (auto)"
+            sr.response_note = f"Auto-approved (bundle: {bundle['name']})"
+            ministry_data = await _fetch_ministry_data(svc_def["ministry"], cin)
+            citizen_dict = {
+                "cin": citizen.cin, "full_name": citizen.full_name,
+                "birth_date": citizen.birth_date.isoformat(), "nationality": citizen.nationality,
+            }
+            doc_content = generate_document(svc_def["service_id"], citizen_dict, svc_def["ministry"], ministry_data, details)
+            doc = Document(
+                cin=cin, document_type=svc_def["service_id"], ministry=svc_def["ministry"],
+                title=doc_content["title"], content=doc_content,
+                reference_number=doc_content["reference"], valid_until=doc_content.get("valid_until"),
+            )
+            db.add(doc)
+            db.flush()
+            sr.document_id = doc.id
+
+        db.add(sr)
+        results.append(_serialize_request(sr))
+
+    db.commit()
+    _log_access(db, cin, "citizen-portal", f"Bundle requested: {bundle['name']}", action="bundle")
+
+    approved = sum(1 for r in results if r["status"] == "approved")
+    pending = sum(1 for r in results if r["status"] == "pending")
+    return {
+        "bundle": bundle_id,
+        "bundle_name": bundle["name"],
+        "total": len(results),
+        "approved_instantly": approved,
+        "pending_review": pending,
+        "requests": results,
+    }
+
+
+# ══════════════════════════════════════════════════
+#  LIFE EVENTS
+# ══════════════════════════════════════════════════
+
+@app.get("/life-events")
+async def list_life_events():
+    """List all available life event workflows."""
+    return {
+        "events": {
+            k: {"name": v["name"], "icon": v["icon"], "description": v["description"], "steps": len(v["steps"])}
+            for k, v in LIFE_EVENTS.items()
+        }
+    }
+
+
+@app.get("/life-events/{event_id}")
+async def get_life_event_details(event_id: str):
+    """Get full details of a life event workflow."""
+    event = LIFE_EVENTS.get(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Life event not found")
+    return event
+
+
+@app.post("/life-events/{event_id}")
+async def start_life_event(event_id: str, cin: str, db: Session = Depends(get_db)):
+    """Start a life event — creates all required service requests as a tracked workflow."""
+    event = LIFE_EVENTS.get(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Life event not found")
+
+    citizen = db.query(Citizen).filter(Citizen.cin == cin).first()
+    if not citizen:
+        raise HTTPException(status_code=404, detail="Citizen not found")
+
+    steps_results = []
+    for step in event["steps"]:
+        service = None
+        for s in CATALOG.get(step["ministry"], []):
+            if s["id"] == step["service_id"]:
+                service = s
+                break
+        if not service:
+            continue
+
+        details = step.get("details", {})
+        sr = ServiceRequest(
+            cin=cin, ministry=step["ministry"], service_type=step["service_id"],
+            service_name=service["name"], details=details, status="pending",
+        )
+
+        if service.get("auto_approve"):
+            sr.status = "approved"
+            sr.processed_at = datetime.utcnow()
+            sr.processed_by = "system (auto)"
+            sr.response_note = f"Auto-approved (life event: {event['name']})"
+            ministry_data = await _fetch_ministry_data(step["ministry"], cin)
+            citizen_dict = {
+                "cin": citizen.cin, "full_name": citizen.full_name,
+                "birth_date": citizen.birth_date.isoformat(), "nationality": citizen.nationality,
+            }
+            doc_content = generate_document(step["service_id"], citizen_dict, step["ministry"], ministry_data, details)
+            doc = Document(
+                cin=cin, document_type=step["service_id"], ministry=step["ministry"],
+                title=doc_content["title"], content=doc_content,
+                reference_number=doc_content["reference"], valid_until=doc_content.get("valid_until"),
+            )
+            db.add(doc)
+            db.flush()
+            sr.document_id = doc.id
+
+        db.add(sr)
+        steps_results.append({
+            "order": step["order"],
+            "label": step["label"],
+            "phase": step["phase"],
+            "request": _serialize_request(sr),
+        })
+
+    db.commit()
+    _log_access(db, cin, "citizen-portal", f"Life event started: {event['name']}", action="life-event")
+
+    completed = sum(1 for s in steps_results if s["request"]["status"] == "approved")
+    total = len(steps_results)
+
+    return {
+        "event_id": event_id,
+        "event_name": event["name"],
+        "total_steps": total,
+        "completed": completed,
+        "pending": total - completed,
+        "progress_percent": round(completed / total * 100) if total else 0,
+        "steps": steps_results,
+    }

@@ -1,9 +1,23 @@
 """
 PDF generator — produces real downloadable government documents.
-Uses fpdf2 to create professional official PDFs.
+Uses fpdf2 to create professional official PDFs with QR codes.
 """
 
+from io import BytesIO
+
+import qrcode
 from fpdf import FPDF
+
+
+def _generate_qr_bytes(url: str) -> bytes:
+    """Generate a QR code PNG as bytes."""
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _sanitize(text: str) -> str:
@@ -209,16 +223,34 @@ class OfficialPDF(FPDF):
     # ── Signature block ──────────────────────────────
 
     def _draw_signature(self):
-        if self.get_y() > 230:
+        if self.get_y() > 210:
             self.add_page()
 
-        self.ln(10)
-        self.set_font("Helvetica", "", 9)
-        self.cell(90, 5, f"  Issued on: {self.doc.get('issued_date', '')}")
-        self.ln(20)
+        self.ln(8)
 
-        # Right-aligned signature block
-        self.set_x(120)
+        # QR code on the left, signature on the right
+        y_start = self.get_y()
+        verification_url = self.doc.get("verification_url", "")
+
+        if verification_url:
+            try:
+                qr_bytes = _generate_qr_bytes(verification_url)
+                self.image(BytesIO(qr_bytes), x=15, y=y_start, w=28, h=28)
+                self.set_xy(15, y_start + 29)
+                self.set_font("Helvetica", "", 5.5)
+                self.set_text_color(120, 120, 120)
+                self.cell(28, 3, "Scan to verify", align="C")
+            except Exception:
+                pass  # QR generation failed — skip silently
+
+        # Issued date (center)
+        self.set_xy(50, y_start + 5)
+        self.set_font("Helvetica", "", 9)
+        self.set_text_color(0, 0, 0)
+        self.cell(60, 5, f"Issued on: {self.doc.get('issued_date', '')}")
+
+        # Signature block (right)
+        self.set_xy(120, y_start + 15)
         self.set_draw_color(0, 0, 0)
         self.line(125, self.get_y(), 190, self.get_y())
         self.ln(2)

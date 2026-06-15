@@ -10,8 +10,11 @@ import ErrorReport from "./components/ErrorReport";
 import ServicesPage from "./components/ServicesPage";
 import RequestsPage from "./components/RequestsPage";
 import EmployeePortal from "./components/EmployeePortal";
+import LifeEventsPage from "./components/LifeEventsPage";
+import BundlesPage from "./components/BundlesPage";
+import VerifyPage from "./components/VerifyPage";
 
-type Page = "dashboard" | "services" | "requests" | "data" | "audit" | "report";
+type Page = "dashboard" | "life-events" | "bundles" | "services" | "requests" | "data" | "audit" | "report";
 
 export default function App() {
   const [citizen, setCitizen] = useState<CitizenData | null>(null);
@@ -20,6 +23,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<Page>("dashboard");
   const [employeeMode, setEmployeeMode] = useState(false);
+  const [verifyMode, setVerifyMode] = useState(false);
 
   const handleSearch = useCallback(async (cin: string) => {
     setLoading(true);
@@ -69,6 +73,20 @@ export default function App() {
     return <EmployeePortal onBack={() => setEmployeeMode(false)} />;
   }
 
+  if (verifyMode) {
+    return (
+      <div>
+        <VerifyPage />
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2">
+          <button onClick={() => setVerifyMode(false)}
+            className="px-4 py-2 bg-white shadow-lg rounded-full text-sm text-gray-600 hover:text-gray-900 border">
+            &larr; Back to Portal
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Landing page ──
   if (!citizen && !loading) {
     return (
@@ -93,14 +111,14 @@ export default function App() {
           )}
           <div className="mt-6 flex justify-center gap-4 text-sm text-gray-400">
             <span>Try:</span>
-            {["12345678", "87654321", "11223344"].map((cin) => (
+            {["10000001", "10000003", "10000007"].map((cin) => (
               <button key={cin} onClick={() => handleSearch(cin)}
                 className="font-mono text-blue-600 hover:text-blue-800 hover:underline">{cin}</button>
             ))}
           </div>
           <div className="mt-16 grid grid-cols-3 gap-4 stagger">
             {[
-              { n: "12", label: "Ministries" },
+              { n: "9", label: "Ministries" },
               { n: "35+", label: "Online Services" },
               { n: "0", label: "Ministry Visits" },
             ].map((s) => (
@@ -110,7 +128,11 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="mt-12 text-center">
+          <div className="mt-12 flex justify-center gap-6">
+            <button onClick={() => setVerifyMode(true)}
+              className="text-xs text-blue-500 hover:text-blue-700 font-medium transition-colors">
+              Verify a Document
+            </button>
             <button onClick={() => setEmployeeMode(true)}
               className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
               Ministry Staff Login &rarr;
@@ -129,7 +151,7 @@ export default function App() {
         <div className="flex items-center justify-center pt-32">
           <div className="text-center animate-fade-in">
             <div className="w-14 h-14 border-[3px] border-blue-100 border-t-blue-600 rounded-full animate-spin mx-auto" />
-            <p className="text-gray-400 mt-6 text-sm">Querying 12 ministries securely...</p>
+            <p className="text-gray-400 mt-6 text-sm">Querying 9 ministries securely...</p>
           </div>
         </div>
       </div>
@@ -139,6 +161,8 @@ export default function App() {
   // ── Portal ──
   const tabs: { id: Page; label: string; badge?: number }[] = [
     { id: "dashboard", label: "Dashboard" },
+    { id: "life-events", label: "Life Events" },
+    { id: "bundles", label: "Bundles" },
     { id: "services", label: "Services" },
     { id: "requests", label: "My Requests" },
     { id: "data", label: "My Data" },
@@ -174,6 +198,8 @@ export default function App() {
 
       <main className="max-w-6xl mx-auto px-4 py-6">
         {page === "dashboard" && <Dashboard data={citizen!} auditCount={audit.length} />}
+        {page === "life-events" && <LifeEventsPage cin={citizen!.cin} onStarted={() => {}} />}
+        {page === "bundles" && <BundlesPage cin={citizen!.cin} onRequested={() => {}} />}
         {page === "services" && <ServicesPage cin={citizen!.cin} onRequestSubmitted={() => {}} />}
         {page === "requests" && <RequestsPage cin={citizen!.cin} />}
         {page === "data" && <CitizenDataView data={citizen!} />}
